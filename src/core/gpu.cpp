@@ -12,11 +12,10 @@
 #include "stb_image_write.h"
 #include "system.h"
 #include "timers.h"
+#include "xxhash.h"
 #include <cinttypes>
 #include <cmath>
 #include <imgui.h>
-#include <unordered_set>
-#include <xxhash.h>
 Log_SetChannel(GPU);
 
 std::unique_ptr<GPU> g_gpu;
@@ -29,6 +28,8 @@ GPU::~GPU() = default;
 
 bool GPU::Initialize(HostDisplay* host_display)
 {
+  Log_ErrorPrintf("Size %zu", sizeof(m_dumped_textures));
+
   m_host_display = host_display;
   m_force_progressive_scan = g_settings.gpu_disable_interlacing;
   m_force_ntsc_timings = g_settings.gpu_force_ntsc_timings;
@@ -1358,15 +1359,15 @@ GPU::TextureHash GPU::GetCurrentTextureHash() const
   }
 }
 
-void GPU::DumpCurrentTexture() const
+void GPU::DumpCurrentTexture()
 {
-  static std::unordered_set<TextureHash, TextureHashHasher> dumped_textures;
-
   const TextureHash hash = GetCurrentTextureHash();
-  if (dumped_textures.find(hash) != dumped_textures.end())
+  if (m_dumped_textures && m_dumped_textures->find(hash) != m_dumped_textures->end())
     return;
 
-  dumped_textures.insert(hash);
+  if (!m_dumped_textures)
+    m_dumped_textures = std::make_unique<DumpedTextureSet>();
+  m_dumped_textures->insert(hash);
 
   const TextureMode mode = m_draw_mode.GetTextureMode();
   const u32 clut_size = (mode == TextureMode::Palette4Bit ? 16 : (mode == TextureMode::Palette8Bit ? 256 : 0));
@@ -1449,6 +1450,12 @@ void GPU::DumpCurrentTexture() const
     path += TinyString::FromFormat("/%" PRIx64 "_%" PRIx64 ".png", hash.texture_hash, hash.palette_hash);
   else
     path += TinyString::FromFormat("/%" PRIx64 ".png", hash.texture_hash);
+
+  if (FileSystem::FileExists(path.c_str()))
+  {
+    Log_DevPrintf("Not dumping texture to '%s', already exists.", path.c_str());
+    return;
+  }
 
   if (!stbi_write_png(path.c_str(), TEXTURE_PAGE_WIDTH, TEXTURE_PAGE_HEIGHT, 4, texture_data.data(),
                       TEXTURE_PAGE_WIDTH * sizeof(u32)))
